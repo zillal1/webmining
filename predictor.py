@@ -1,6 +1,8 @@
 import torch, numpy as np, pandas as pd, time
 from torchtext.data.utils import get_tokenizer
 from torch.utils.data import DataLoader
+import sys
+
 from WM.model.nn import TextCNN
 from WM.utils.review import ReviewSet
 

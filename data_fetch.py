@@ -1,93 +1,143 @@
-# amazon_to_kaggle_format.py
-"""
-将 Amazon 评论抓取并保存为 Kaggle 数据集相同结构
-用法：python data_fetch.py B07FZ8S74R Toys_and_Games 600
-"""
-
-import csv, sys, time, random, re, requests
+import time
+import json
+import hashlib
+import random
 from datetime import datetime
-from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.keys import Keys
 
-HEADERS = {"User-Agent": "Mozilla/5.0", "Accept-Language": "en-US,en;q=0.9"}
-HELPFUL_RE = re.compile(r"(\d[\d,]*)")  # 提取 “123 people found this helpful”
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+
+chrome_options = Options()
+chrome_options.add_argument("--headless")
+
+service = Service(executable_path="C:/Users/ISCREAM/AppData/Local/Google/Chrome/Application/chrome.exe")  # ← 换成你的实际路径
+driver = webdriver.Chrome(options=chrome_options)
 
 
-def parse_votes(helpful_text: str):
-    """
-    Amazon 页面只给正向 helpful；这里按 Kaggle 结构返回 [down, up]
-    """
-    if not helpful_text:
-        return [0, 0]
-    m = HELPFUL_RE.search(helpful_text)
-    up = int(m.group(1).replace(",", "")) if m else 0
-    return [0, up]  # down 票无法获取，填 0
+def get_asin_from_url(url):
+    if "/dp/" in url:
+        return url.split("/dp/")[1].split('/')[0]
+    elif "/product/" in url:
+        return url.split("/product/")[1].split('/')[0]
+    return ''
 
 
-def normalise_date(raw_date: str):
-    """
-    Amazon: 'Reviewed in the United States on July 13, 2014'
-    输出 MM.DD.YYYY
-    """
+def generate_oid(text):
+    return hashlib.md5(text.encode()).hexdigest()[:24]
+
+
+def parse_helpful(text):
+    # 例："23 people found this helpful"
     try:
-        month_day_year = raw_date.rsplit(" on ", 1)[-1]  # July 13, 2014
-        d = datetime.strptime(month_day_year, "%B %d, %Y")
-        return d.strftime("%m.%d.%Y")
-    except Exception:
-        return ""
+        num = int(text.strip().split()[0])
+        return [num, num]
+    except:
+        return [0, 0]
 
 
-def crawl_one_asin(asin, category, limit):
-    url_tpl = f"https://www.amazon.com/product-reviews/{asin}/?pageNumber={{}}&sortBy=recent"
-    print(url_tpl)
-    page, collected = 1, 0
-    with open("kaggle_format_reviews.csv", "w", newline="", encoding="utf8") as f:
-        fieldnames = ["reviewerID", "reviewerName", "votes-down/up",
-                      "reviewText", "rating", "summary",
-                      "reviewTime", "category", "class"]
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
+def parse_unix_time(time_str):
+    # 亚马逊英文格式："Reviewed in the United States on March 7, 2013"
+    # 输出：unix时间戳
+    try:
+        # 只取日期部分
+        if "on" in time_str:
+            date_part = time_str.split("on")[-1].strip()
+        else:
+            date_part = time_str.strip()
+        dt = datetime.strptime(date_part, "%B %d, %Y")
+        return int(time.mktime(dt.timetuple())), date_part
+    except:
+        return 0, ""
 
-        while collected < limit:
-            print(f"[{asin}] page {page}")
-            r = requests.get(url_tpl.format(page), headers=HEADERS, timeout=15)
-            if r.status_code != 200:
-                print("Blocked or finished.")
+
+def review_to_json(review_elem, asin, category):
+    # 提取用户名
+    reviewer_name = review_elem.find_element(By.CLASS_NAME, 'a-profile-name').text.strip()
+    # 评论正文
+    review_text = review_elem.find_element(By.CLASS_NAME, 'review-text-content').text.strip()
+    # 评论标题
+    summary = review_elem.find_element(By.CLASS_NAME, 'review-title-content').text.strip()
+    # 评分: "5.0 out of 5 stars"
+    ov = review_elem.find_element(By.CLASS_NAME, 'review-rating').text.strip()
+    overall = float(ov.split(' ')[0])
+    # 时间
+    review_time_str = review_elem.find_element(By.CLASS_NAME, 'review-date').text.strip()
+    unixReviewTime, reviewTimeFmt = parse_unix_time(review_time_str)
+    # 有用数
+    try:
+        helpful_txt = review_elem.find_element(By.CLASS_NAME, 'cr-vote-text').text.strip()
+        helpful = parse_helpful(helpful_txt)
+    except:
+        helpful = [0, 0]
+    # 伪造reviewerID与_id
+    reviewerID = generate_oid(reviewer_name + asin + review_time_str + str(random.random()))
+    oid = generate_oid(review_text + reviewer_name)
+    # 整理输出
+    return {
+        "_id": {"$oid": oid},
+        "reviewerID": reviewerID,
+        "asin": asin,
+        "reviewerName": reviewer_name,
+        "helpful": helpful,
+        "reviewText": review_text,
+        "overall": overall,
+        "summary": summary,
+        "unixReviewTime": unixReviewTime,
+        "reviewTime": reviewTimeFmt,
+        "category": category
+    }
+
+
+def get_amazon_reviews(url, category):
+    asin = get_asin_from_url(url)
+    chrome_options = Options()
+    chrome_options.add_argument('--headless')
+    chrome_options.add_argument('--disable-gpu')
+    chrome_options.add_argument("--no-sandbox")
+    driver = webdriver.Chrome(options=chrome_options)
+    driver.get(url)
+    time.sleep(2)
+
+    # 跳转到所有评论页面
+    try:
+        all_reviews_link = driver.find_element(By.PARTIAL_LINK_TEXT, 'See all reviews')
+        all_reviews_link.click()
+        time.sleep(2)
+    except:
+        print("未找到进入评论区的链接，可能本页面已是评论页")
+
+    results = []
+    while True:
+        time.sleep(1.5)
+        reviews = driver.find_elements(By.XPATH, '//div[contains(@id,"customer_review-")]')
+        for review_elem in reviews:
+            try:
+                dct = review_to_json(review_elem, asin, category)
+                results.append(dct)
+            except Exception as ex:
+                print(f"解析评论失败，跳过。{str(ex)}")
+        # 翻页
+        try:
+            next_btn = driver.find_element(By.CLASS_NAME, 'a-last')
+            if 'a-disabled' in next_btn.get_attribute('class'):
                 break
-            soup = BeautifulSoup(r.text, "lxml")
-            blocks = soup.select("div[data-hook='review']")
-            if not blocks:
-                break
-            for b in blocks:
-                collected += 1
-                review_id = b.get("id") or f"{asin}_{page}_{collected}"
-                name_tag = b.select_one("span.a-profile-name")
-                title_tag = b.select_one("a[data-hook='review-title']")
-                rating_tag = b.select_one("i[data-hook='review-star-rating']")
-                body_tag = b.select_one("span[data-hook='review-body']")
-                date_tag = b.select_one("span[data-hook='review-date']")
-                helpful_tag = b.select_one("span[data-hook='helpful-vote-statement']")
-
-                row = {
-                    "reviewerID": review_id,
-                    "reviewerName": (name_tag.text.strip() if name_tag else ""),
-                    "votes-down/up": parse_votes(helpful_tag.text.strip() if helpful_tag else ""),
-                    "reviewText": (body_tag.get_text(" ", strip=True) if body_tag else ""),
-                    "rating": int(float(rating_tag.text.split()[0])) if rating_tag else "",
-                    "summary": (title_tag.text.strip() if title_tag else ""),
-                    "reviewTime": normalise_date(date_tag.text.strip() if date_tag else ""),
-                    "category": category,
-                    "class": -1  # 未标注
-                }
-                writer.writerow(row)
-                if collected >= limit:
-                    break
-            page += 1
-            time.sleep(random.uniform(1, 3))
+            next_btn.click()
+        except:
+            break
+    driver.quit()
+    return results
 
 
 if __name__ == "__main__":
-    asin = sys.argv[1]  # e.g. B07FZ8S74R
-    category = sys.argv[2]  # e.g. Toys_and_Games
-    limit_num = int(sys.argv[3]) if len(sys.argv) > 3 else 600
-    crawl_one_asin(asin, category, limit_num)
-    print("Done! 输出文件: kaggle_format_reviews.csv")
+    # 输入示例
+    url = input("请输入亚马逊商品链接：\n").strip()
+    category = input("请输入商品分类(如Cell_Phones_and_Accessories)：\n").strip()
+    reviews = get_amazon_reviews(url, category)
+    with open('output.json', 'w', encoding='utf-8') as f:
+        json.dump(reviews, f, ensure_ascii=False, indent=2)
+    print("已保存所有评论至output.json")
