@@ -8,7 +8,8 @@ from WM.utils.review import ReviewSet
 
 
 class PredictorHelper:
-    def __init__(self, CKPT_PATH, INPUT_CSV, strategy=0):
+    def __init__(self, CKPT_PATH, INPUT_CSV, category, strategy=0):
+        self.category = category
         # ------------ path & device -------------
         self.CKPT_PATH = CKPT_PATH  # 用你的新模型名
         self.INPUT_CSV = INPUT_CSV
@@ -46,7 +47,7 @@ class PredictorHelper:
     def inference(self):
         # ========== inference ==========
         df = pd.read_csv(self.INPUT_CSV).dropna(subset=["reviewText"])
-        df = df[1200000:1201000]  # TODO:Demo用，正式跑全体可删除
+        # df = df[1200000:1201000]  # TODO:Demo用，正式跑全体可删除
 
         ds = ReviewSet(df["reviewText"].astype(str).tolist(), item_func=self.text_to_tensor)
         dl = DataLoader(ds, batch_size=128)
@@ -71,11 +72,44 @@ class PredictorHelper:
             pct_n = np.percentile(df["spam_proba"], self.strategy)
             best_mask = df["spam_proba"] <= pct_n
             df_best = df[best_mask]
+            df_best.to_csv(out, index=False)
+            print(df_best)
             print(
                 f"The best {self.strategy}% have been saved at {out} ({len(df_best)}/{len(df)} rows, proba ≤{pct_n:.4f}).")
+
+    def label_generate(self):
+        # ========== inference ==========
+        df = pd.read_csv(self.INPUT_CSV).dropna(subset=["reviewText"])
+        print(df)
+        # df = df[1200000:1201000]  # TODO:Demo用，正式跑全体可删除
+
+        ds = ReviewSet(df["reviewText"].astype(str).tolist(), item_func=self.text_to_tensor)
+        dl = DataLoader(ds, batch_size=128)
+
+        proba = []
+        with torch.no_grad():
+            for batch in dl:
+                proba.extend(self.model(batch.to(self.DEVICE)).cpu().numpy())
+        df["spam_proba"] = proba
+
+        df['label'] = (df['spam_proba'] <= self.THR).astype(int)
+
+        # ========== save model according to time =============
+        now_str = time.strftime("%Y%m%d_%H%M")
+
+        df["spam_proba"] = proba
+
+        # ========== save model according to time =============
+        now_str = time.strftime("%Y%m%d_%H%M")
+
+        out = f"data/training_data/reviews_{self.category}_{now_str}.csv"
+        df_best = df[df['spam_proba'] < self.THR]
+        df_best.to_csv(out, index=False)
+        print(f"The dataset has been saved at: {out}. Threshold: {self.THR:.4f}")
 
 
 if __name__ == '__main__':
     ph = PredictorHelper(CKPT_PATH='model/saved_models/spam_cnn_20250630_1758_100w.pt',
-                         INPUT_CSV='data/training_data/amazon_spam_train.csv')
+                         INPUT_CSV='data/training_data/review.csv', strategy=5, category='Electronic_Device')
     ph.inference()
+    ph.label_generate()

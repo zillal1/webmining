@@ -123,7 +123,7 @@ def main(input_csv):
     KB_JSON = "aspect_map.json"
     AMT = AspectMapTrainer(KB_JSON)
     df = pd.read_csv(input_csv)
-    assert 'reviewText' in df.columns, 'CSV必须含reviewText列'
+    assert 'reviewText' in df.columns, 'CSV file must contain reviewText column!'
     AMT.train(df)
 
 

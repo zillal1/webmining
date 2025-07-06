@@ -212,7 +212,7 @@ def run():
         'LR': 1e-3,
         'DEVICE': "cuda" if torch.cuda.is_available() else "cpu"
     }
-    csv_path = 'data/training_data/amazon_spam_train.csv'
+    csv_path = 'data/training_data/reviews.csv'
     model_path = 'model/saved_models/spam_cnn'
     trainer = DetectorTrainer(CONFIG, csv_path, model_path)
     trainer.train()
